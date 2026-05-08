@@ -1,0 +1,319 @@
+// Aval — Prisma schema (PostgreSQL / Neon)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  citizen
+  manufacturer
+  government
+  admin
+}
+
+enum WorkspaceMemberRole {
+  owner
+  editor
+  viewer
+}
+
+enum KycStatus {
+  not_required
+  not_started
+  pending
+  approved
+  rejected
+}
+
+enum OtpPurpose {
+  email_verify
+  password_reset
+  login_2fa
+}
+
+enum SkuCategory {
+  bottled_water
+  soft_drinks
+}
+
+enum SkuStatus {
+  pending
+  approved
+  rejected
+  suspended
+}
+
+enum PackagingType {
+  PET
+  glass
+  aluminum
+  carton
+  other
+}
+
+enum BatchStatus {
+  pending     // submitted, waiting for regulator approval
+  approved    // approved, ready for code generation (GEN-03)
+  rejected    // rejected by regulator
+  generated   // codes generated (GEN-03 has run)
+  revoked     // revoked after generation (GEN-07)
+}
+
+model User {
+  id                  String    @id @default(cuid())
+  email               String    @unique
+  passwordHash        String
+  firstName           String
+  lastName            String
+  fullName            String
+  phone               String?
+  organisation        String?
+  country             String?   @default("Cameroun")
+  roleTitle           String?
+  role                UserRole  @default(citizen)
+  emailVerified       Boolean   @default(false)
+  kycStatus           KycStatus @default(not_started)
+  lastLoginAt         DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  ownedWorkspaces  Workspace[]        @relation("WorkspaceOwner")
+  memberships      WorkspaceMember[]
+  notes            WorkspaceNote[]
+  auditLogs        AdminAuditLog[]
+  institution      Institution?
+  kycSubmission    KycSubmission?     @relation("KycOwner")
+  reviewedKyc      KycSubmission[]    @relation("KycReviewer")
+  otpTokens        OtpToken[]
+  ownedSkus        Sku[]              @relation("SkuOwner")
+  reviewedSkus     Sku[]              @relation("SkuReviewer")
+  ownedBatches     Batch[]            @relation("BatchOwner")
+  reviewedBatches  Batch[]            @relation("BatchReviewer")
+}
+
+model Workspace {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  name        String
+  description String?
+  kind        String   @default("institution")
+  ownerId     String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  owner   User              @relation("WorkspaceOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  members WorkspaceMember[]
+  notes   WorkspaceNote[]
+}
+
+model WorkspaceMember {
+  id          String              @id @default(cuid())
+  workspaceId String
+  userId      String
+  role        WorkspaceMemberRole @default(editor)
+  createdAt   DateTime            @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+}
+
+model WorkspaceNote {
+  id          String   @id @default(cuid())
+  workspaceId String
+  authorId    String
+  title       String
+  body        String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  author    User      @relation(fields: [authorId], references: [id], onDelete: Cascade)
+}
+
+model AdminAuditLog {
+  id        String   @id @default(cuid())
+  actorId   String
+  action    String
+  target    String?
+  metadata  String?
+  ip        String?
+  createdAt DateTime @default(now())
+
+  actor User @relation(fields: [actorId], references: [id], onDelete: Cascade)
+}
+
+model Institution {
+  id           String   @id @default(cuid())
+  ownerId      String   @unique
+  legalName    String
+  tradeName    String?
+  rccm         String?  // Registre du Commerce et du Crédit Mobilier
+  taxId        String?  // NIU (Cameroun)
+  oapiId       String?  // OAPI registration when applicable
+  sector       String
+  country      String   @default("Cameroun")
+  city         String?
+  address      String?
+  phone        String?
+  website      String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  owner         User           @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  kyc           KycSubmission?
+  skus          Sku[]
+  batches       Batch[]
+  signingKeys   SigningKey[]
+  codes         Code[]
+}
+
+model Sku {
+  id               String        @id @default(cuid())
+  code             String        @unique  // server-generated, e.g. AVL-SKU-XXXXXX
+  institutionId    String
+  ownerId          String
+  name             String
+  category         SkuCategory
+  packaging        PackagingType
+  declaredVolumeMl Int
+  batchFormat      String        // e.g. "AVL-{YYMM}-{SEQ}"
+  status           SkuStatus     @default(pending)
+  rejectionReason  String?
+  reviewedAt       DateTime?
+  reviewedById     String?
+  submittedAt      DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  institution      Institution   @relation(fields: [institutionId], references: [id], onDelete: Cascade)
+  owner            User          @relation("SkuOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  reviewedBy       User?         @relation("SkuReviewer", fields: [reviewedById], references: [id])
+  batches          Batch[]
+  codes            Code[]
+
+  @@index([institutionId])
+  @@index([status])
+}
+
+model Batch {
+  id                  String       @id @default(cuid())
+  code                String       @unique  // server-generated, e.g. AVL-BTH-XXXXXX
+  skuId               String
+  institutionId       String
+  ownerId             String
+  requestedQuantity   Int          // capped per request (MAX_BATCH_QTY)
+  productionDate      DateTime
+  expiryDate          DateTime
+  externalRef         String?      // optional manufacturer-side batch label
+  status              BatchStatus  @default(pending)
+  rejectionReason     String?
+  reviewedAt          DateTime?
+  reviewedById        String?
+  generatedAt         DateTime?    // set when GEN-03 generates serials
+  submittedAt         DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+
+  sku                 Sku          @relation(fields: [skuId], references: [id], onDelete: Restrict)
+  institution         Institution  @relation(fields: [institutionId], references: [id], onDelete: Cascade)
+  owner               User         @relation("BatchOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  reviewedBy          User?        @relation("BatchReviewer", fields: [reviewedById], references: [id])
+  codes               Code[]
+
+  @@index([institutionId])
+  @@index([skuId])
+  @@index([status])
+}
+
+model SigningKey {
+  id            String   @id @default(cuid())
+  institutionId String
+  version       Int
+  secretHex     String   // 32 random bytes, hex-encoded
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  rotatedAt     DateTime?
+
+  institution   Institution @relation(fields: [institutionId], references: [id], onDelete: Cascade)
+
+  @@unique([institutionId, version])
+  @@index([institutionId, active])
+}
+
+model Code {
+  id            String   @id @default(cuid())
+  serialHash    String   @unique  // SHA-256 of the public token (cleartext never stored)
+  signature     String              // HMAC-SHA256 hex
+  nonce         String              // hex (16 chars = 8 bytes)
+  serialIndex   Int                 // 0..N-1 within the batch
+  keyVersion    Int      @default(1)
+  batchId       String
+  institutionId String
+  skuId         String
+  createdAt     DateTime @default(now())
+
+  batch         Batch       @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  institution   Institution @relation(fields: [institutionId], references: [id], onDelete: Cascade)
+  sku           Sku         @relation(fields: [skuId], references: [id], onDelete: Restrict)
+
+  @@unique([batchId, serialIndex])
+  @@index([batchId])
+  @@index([institutionId])
+  @@index([skuId])
+}
+
+model KycSubmission {
+  id                String       @id @default(cuid())
+  status            KycStatus    @default(pending)
+  userId            String       @unique
+  institutionId     String       @unique
+  legalRepName      String
+  legalRepRole      String
+  legalRepIdType    String       // CNI, Passport, Permis
+  legalRepIdNumber  String
+  notes             String?      // applicant notes
+  rejectionReason   String?
+  reviewedAt        DateTime?
+  reviewedById      String?
+  submittedAt       DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  user         User         @relation("KycOwner", fields: [userId], references: [id], onDelete: Cascade)
+  institution  Institution  @relation(fields: [institutionId], references: [id], onDelete: Cascade)
+  reviewedBy   User?        @relation("KycReviewer", fields: [reviewedById], references: [id])
+  documents    KycDocument[]
+}
+
+model KycDocument {
+  id            String        @id @default(cuid())
+  submissionId  String
+  kind          String        // RCCM_CERT, TAX_ID, LEGAL_REP_ID, OAPI_CERT, OTHER
+  filename      String
+  url           String        // remote URL or data URL placeholder for now
+  mimeType      String
+  size          Int
+  uploadedAt    DateTime      @default(now())
+
+  submission    KycSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+}
+
+model OtpToken {
+  id          String     @id @default(cuid())
+  email       String
+  codeHash    String     // bcrypt hash of the 6-digit code
+  purpose     OtpPurpose
+  userId      String?
+  expiresAt   DateTime
+  consumedAt  DateTime?
+  attempts    Int        @default(0)
+  createdAt   DateTime   @default(now())
+
+  user        User?      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([email, purpose, consumedAt])
+}
