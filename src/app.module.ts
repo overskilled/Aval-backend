@@ -17,6 +17,7 @@ import { CodesModule } from './codes/codes.module';
 import { VerifyModule } from './verify/verify.module';
 import { AdminModule } from './admin/admin.module';
 import { BootstrapModule } from './bootstrap/bootstrap.module';
+import { ContactModule } from './contact/contact.module';
 
 @Module({
   imports: [
@@ -41,6 +42,7 @@ import { BootstrapModule } from './bootstrap/bootstrap.module';
     VerifyModule,
     AdminModule,
     BootstrapModule,
+    ContactModule,
   ],
   controllers: [AppController],
   providers: [
